@@ -1,0 +1,99 @@
+name: Diagnose Pylint 11860 on macOS
+
+on:
+  push:
+    branches: [diagnostic/11860-macos]
+    paths: [.github/workflows/diagnose-11860-macos.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    if: github.repository == 'hector2394/pylint'
+    runs-on: macos-26-intel
+    timeout-minutes: 15
+    steps:
+      - name: Check out reported downstream revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: approvals/ApprovalTests.Python
+          ref: 668eff9adb50781373acc32aa0bc71aa5dfe9121
+          path: ApprovalTests.Python
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.11.15'
+
+      - name: Install reported environment
+        working-directory: ApprovalTests.Python
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -r requirements.dev.txt
+          .venv/bin/python -m pip install pylint==4.1.4 astroid==4.3.4
+
+      - name: Compare revisions and capture shutdown errors
+        working-directory: ApprovalTests.Python
+        shell: bash
+        run: |
+          .venv/bin/python - <<'PY'
+          import json
+          import os
+          import platform
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          output = Path('../diagnostic-results').resolve()
+          output.mkdir()
+          environment = {
+              'platform': platform.platform(),
+              'machine': platform.machine(),
+              'python': sys.version,
+              'mac_version': platform.mac_ver(),
+          }
+          (output / 'environment.json').write_text(json.dumps(environment, indent=2))
+          freeze = subprocess.check_output([sys.executable, '-m', 'pip', 'freeze'])
+          (output / 'requirements.txt').write_bytes(freeze)
+          print(json.dumps(environment), flush=True)
+          results = []
+          revisions = [
+              '32ccbd1d18ab2049227244684011e9487b0de306',
+              '668eff9adb50781373acc32aa0bc71aa5dfe9121',
+          ]
+          for revision in revisions:
+              subprocess.run(['git', 'checkout', '--detach', revision], check=True)
+              for seed in (0, 1):
+                  label = f'{revision[:8]}-seed-{seed}'
+                  env = os.environ.copy()
+                  env['PYTHONHASHSEED'] = str(seed)
+                  env['PYLINTHOME'] = str(output / f'cache-{label}')
+                  process = subprocess.run(
+                      [sys.executable, '-m', 'pylint', '.'],
+                      env=env, capture_output=True, timeout=180,
+                  )
+                  (output / f'{label}.stdout.log').write_bytes(process.stdout)
+                  (output / f'{label}.stderr.log').write_bytes(process.stderr)
+                  result = {
+                      'revision': revision, 'seed': seed,
+                      'exit_code': process.returncode,
+                      'stderr_bytes': len(process.stderr),
+                      'reported_error': b'generator already executing' in process.stderr,
+                  }
+                  results.append(result)
+                  (output / 'results.json').write_text(json.dumps(results, indent=2))
+                  print(json.dumps(result), flush=True)
+                  print(process.stderr.decode(errors='replace'), flush=True)
+          PY
+
+      - name: Preserve diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: pylint-11860-macos
+          path: diagnostic-results
+          if-no-files-found: warn
+          retention-days: 14
