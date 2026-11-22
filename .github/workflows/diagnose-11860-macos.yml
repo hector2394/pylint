@@ -172,7 +172,8 @@ jobs:
           after = '            yield from itertools.chain(\n                _infer_stmts(self._wrap_attr(get_attr, context), context, frame=self)\n            )'
           assert source.count(before) == 1
           source = source.replace(before, after)
-          source = source.replace('import copy\n', 'import copy\nimport itertools\n')
+          assert source.count('import collections\n') == 1
+          source = source.replace('import collections\n', 'import collections\nimport itertools\n')
           before = '                yield from self._wrap_attr(attrs, context)'
           after = '                yield from itertools.chain(self._wrap_attr(attrs, context))'
           assert source.count(before) == 1
@@ -187,6 +188,8 @@ jobs:
               (output / f'iteration-seed-{seed}.stderr.log').write_bytes(result.stderr)
               print(f'Explicit iteration seed={seed} exit={result.returncode} stderr_bytes={len(result.stderr)}')
               print(result.stderr.decode(errors='replace'))
+              assert result.returncode == 0
+              assert not result.stderr
           PY
 
       - name: Preserve diagnostic evidence
