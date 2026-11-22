@@ -147,6 +147,36 @@ jobs:
             2> ../diagnostic-results/inference-frames.stderr.log
           cat ../diagnostic-results/inference-frames.stderr.log
 
+      - name: Compare explicit iteration during inference cleanup
+        working-directory: ApprovalTests.Python
+        shell: bash
+        run: |
+          .venv/bin/python - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          import astroid.nodes.node_classes
+
+          path = Path(astroid.nodes.node_classes.__file__)
+          source = path.read_text()
+          before = '                yield from owner.igetattr(node.attrname, context)'
+          after = '                for result in owner.igetattr(node.attrname, context):\n                    yield result'
+          assert source.count(before) == 1
+          path.write_text(source.replace(before, after))
+          output = Path('../diagnostic-results').resolve()
+          for seed in (0, 1):
+              env = os.environ.copy()
+              env['PYTHONHASHSEED'] = str(seed)
+              env['PYLINTHOME'] = str(output / f'iteration-cache-{seed}')
+              result = subprocess.run([sys.executable, '-m', 'pylint', '.'], env=env, capture_output=True, timeout=180)
+              (output / f'iteration-seed-{seed}.stdout.log').write_bytes(result.stdout)
+              (output / f'iteration-seed-{seed}.stderr.log').write_bytes(result.stderr)
+              print(f'Explicit iteration seed={seed} exit={result.returncode} stderr_bytes={len(result.stderr)}')
+              print(result.stderr.decode(errors='replace'))
+          PY
+
       - name: Preserve diagnostic evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
