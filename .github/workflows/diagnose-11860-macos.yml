@@ -90,6 +90,50 @@ jobs:
                   print(process.stderr.decode(errors='replace'), flush=True)
           PY
 
+      - name: Capture inference frames from the failing revision
+        working-directory: ApprovalTests.Python
+        shell: bash
+        run: |
+          mkdir ../diagnostic-results/hook
+          cat > ../diagnostic-results/hook/sitecustomize.py <<'PY'
+          import json
+          import os
+          import sys
+          import types
+
+          def capture(event, encode=json.dumps, stream=sys.stderr, generator_type=types.GeneratorType):
+              frames = []
+              traceback = event.exc_traceback
+              while traceback is not None:
+                  frame = traceback.tb_frame
+                  values = {}
+                  for name, value in frame.f_locals.items():
+                      description = {'type': type(value).__name__}
+                      try:
+                          attributes = object.__getattribute__(value, '__dict__')
+                      except AttributeError:
+                          attributes = {}
+                      for attribute in ('name', 'attrname', 'lineno', 'file'):
+                          item = attributes.get(attribute)
+                          if isinstance(item, (str, int)):
+                              description[attribute] = item
+                      if isinstance(value, generator_type):
+                          description['generator'] = value.gi_code.co_name
+                          description['running'] = value.gi_running
+                      values[name] = description
+                  frames.append({'function': frame.f_code.co_name, 'line': traceback.tb_lineno, 'locals': values})
+                  traceback = traceback.tb_next
+              stream.write('INFERENCE_SHUTDOWN ' + encode(frames) + '\n')
+              stream.flush()
+
+          sys.unraisablehook = capture
+          PY
+          PYTHONHASHSEED=0 PYTHONPATH="$PWD/../diagnostic-results/hook" \
+            .venv/bin/python -m pylint . \
+            > ../diagnostic-results/inference-frames.stdout.log \
+            2> ../diagnostic-results/inference-frames.stderr.log
+          cat ../diagnostic-results/inference-frames.stderr.log
+
       - name: Preserve diagnostic evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
