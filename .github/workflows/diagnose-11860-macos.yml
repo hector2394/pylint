@@ -96,27 +96,31 @@ jobs:
         run: |
           mkdir ../diagnostic-results/hook
           cat > ../diagnostic-results/hook/sitecustomize.py <<'PY'
+          import gc
           import json
-          import os
           import sys
           import types
 
-          def capture(event, encode=json.dumps, stream=sys.stderr, generator_type=types.GeneratorType):
+          def describe(value):
+              description = {'type': type(value).__name__}
+              try:
+                  attributes = object.__getattribute__(value, '__dict__')
+              except AttributeError:
+                  attributes = {}
+              for attribute in ('name', 'attrname', 'lineno', 'file'):
+                  item = attributes.get(attribute)
+                  if isinstance(item, (str, int)):
+                      description[attribute] = item
+              return description
+
+          def capture(event, encode=json.dumps, stream=sys.stderr, generator_type=types.GeneratorType, objects=gc.get_objects, describe=describe):
               frames = []
               traceback = event.exc_traceback
               while traceback is not None:
                   frame = traceback.tb_frame
                   values = {}
                   for name, value in frame.f_locals.items():
-                      description = {'type': type(value).__name__}
-                      try:
-                          attributes = object.__getattribute__(value, '__dict__')
-                      except AttributeError:
-                          attributes = {}
-                      for attribute in ('name', 'attrname', 'lineno', 'file'):
-                          item = attributes.get(attribute)
-                          if isinstance(item, (str, int)):
-                              description[attribute] = item
+                      description = describe(value)
                       if isinstance(value, generator_type):
                           description['generator'] = value.gi_code.co_name
                           description['running'] = value.gi_running
@@ -124,6 +128,15 @@ jobs:
                   frames.append({'function': frame.f_code.co_name, 'line': traceback.tb_lineno, 'locals': values})
                   traceback = traceback.tb_next
               stream.write('INFERENCE_SHUTDOWN ' + encode(frames) + '\n')
+              running = []
+              for value in objects():
+                  if isinstance(value, generator_type) and value.gi_running and value.gi_frame is not None:
+                      running.append({
+                          'function': value.gi_code.co_name,
+                          'line': value.gi_frame.f_lineno,
+                          'locals': {key: describe(item) for key, item in value.gi_frame.f_locals.items()},
+                      })
+              stream.write('RUNNING_INFERENCE ' + encode(running) + '\n')
               stream.flush()
 
           sys.unraisablehook = capture
